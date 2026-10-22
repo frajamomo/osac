@@ -17,6 +17,7 @@ from tests.e2e.core.helpers import (
     unique_name,
     wait_for_cr,
     wait_for_deletion,
+    wait_for_grpc_removal,
     wait_for_new_vmi,
     wait_for_provision,
     wait_for_restart,
@@ -129,6 +130,17 @@ def _instance_type_name(compute_instance: dict[str, Any]) -> str:
     return instance_type.get("name") or instance_type.get("id", "")
 
 
+def _wait_for_active_instance_type(grpc: GRPCClient, *, name: str) -> None:
+    poll_until(
+        fn=lambda: grpc.get_instance_type(name=name).get("object", {}).get("spec", {}).get("state", ""),
+        until=lambda state: state == "INSTANCE_TYPE_STATE_ACTIVE",
+        retries=60,
+        delay=2,
+        description=f"{name} ACTIVE",
+        retry_on_error=True,
+    )
+
+
 def _configuration_snapshot(compute_instance: dict[str, Any]) -> tuple[Any, ...]:
     status = compute_instance.get("status", {})
     job_ids = tuple(job.get("jobID", "") for job in status.get("provisioningJobs", []))
@@ -190,7 +202,7 @@ def _next_restart_timestamp(last_restarted_at: str) -> str:
     return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _resize_and_restart_compute_instance(
+def _complete_resize_and_restart_compute_instance(
     grpc: GRPCClient,
     k8s_hub: K8sClient,
     k8s_virt: K8sClient,
@@ -207,10 +219,6 @@ def _resize_and_restart_compute_instance(
     previous_config_version: str,
     initial_vmi_timestamp: str,
 ) -> None:
-    update_response = grpc.update_compute_instance_instance_type(ci_id=ci_uuid, instance_type=target_instance_type)
-    assert update_response.get("warnings", []) == []
-    assert _instance_type_name(update_response) == target_instance_type
-
     _wait_for_configuration_applied(
         k8s_hub,
         name=ci_name,
@@ -254,6 +262,44 @@ def _resize_and_restart_compute_instance(
     )
     _wait_for_vmi_resources(
         k8s_virt, vmi_namespace=vmi_namespace, ci_name=ci_name, vcpus=target_vcpus, memory_gib=target_memory_gib
+    )
+
+
+def _resize_and_restart_compute_instance(
+    grpc: GRPCClient,
+    k8s_hub: K8sClient,
+    k8s_virt: K8sClient,
+    *,
+    ci_uuid: str,
+    ci_name: str,
+    vmi_namespace: str,
+    vm_template: str,
+    target_instance_type: str,
+    current_vcpus: int,
+    current_memory_gib: int,
+    target_vcpus: int,
+    target_memory_gib: int,
+    previous_config_version: str,
+    initial_vmi_timestamp: str,
+) -> None:
+    update_response = grpc.update_compute_instance_instance_type(ci_id=ci_uuid, instance_type=target_instance_type)
+    assert update_response.get("warnings", []) == []
+    assert _instance_type_name(update_response) == target_instance_type
+    _complete_resize_and_restart_compute_instance(
+        grpc,
+        k8s_hub,
+        k8s_virt,
+        ci_uuid=ci_uuid,
+        ci_name=ci_name,
+        vmi_namespace=vmi_namespace,
+        vm_template=vm_template,
+        target_instance_type=target_instance_type,
+        current_vcpus=current_vcpus,
+        current_memory_gib=current_memory_gib,
+        target_vcpus=target_vcpus,
+        target_memory_gib=target_memory_gib,
+        previous_config_version=previous_config_version,
+        initial_vmi_timestamp=initial_vmi_timestamp,
     )
 
 
@@ -559,6 +605,82 @@ def test_compute_instance_resize_via_cli(
         delay=5,
         description=f"{ci_name} RestartRequired after resize",
     )
+
+
+@pytest.mark.usefixtures("compute_instance_type_editor")
+def test_compute_instance_resize_mixed_direction_via_cli(
+    cli: OsacCLI,
+    grpc: GRPCClient,
+    private_grpc: GRPCClient,
+    k8s_hub_client: K8sClient,
+    k8s_virt_client: K8sClient,
+    default_network_attachment: dict[str, Any],
+    vm_template: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TC-FR2-02: independently verify CPU upsize with a memory downsize."""
+    source_instance_type = unique_name("e2e-resize-mixed-a")
+    target_instance_type = unique_name("e2e-resize-mixed-b")
+    created_instance_types: list[str] = []
+    ci_uuid: str | None = None
+    ci_name: str | None = None
+
+    try:
+        for name, vcpus, memory_gib in ((source_instance_type, 2, 8), (target_instance_type, 4, 4)):
+            private_grpc.create_instance_type(
+                name=name, vcpus=vcpus, memory_gib=memory_gib, description="E2E mixed-direction resize test type"
+            )
+            created_instance_types.append(name)
+            _wait_for_active_instance_type(private_grpc, name=name)
+
+        ci_uuid = cli.create_compute_instance(
+            name=unique_name("e2e-resize-mixed"),
+            template=vm_template,
+            network_attachments=[default_network_attachment],
+            instance_type=source_instance_type,
+            run_strategy="Always",
+        )
+        ci_name = wait_for_cr(k8s=k8s_hub_client, uuid=ci_uuid)
+        wait_for_provision(k8s=k8s_hub_client, name=ci_name)
+        wait_for_running(k8s=k8s_hub_client, name=ci_name)
+        initial_configuration = _wait_for_configuration_applied(k8s_hub_client, name=ci_name, vcpus=2, memory_gib=8)
+        assert _instance_type_name(grpc.get_compute_instance(ci_id=ci_uuid)) == source_instance_type
+        vm_namespace = k8s_hub_client.get_compute_instance_vm_namespace(name=ci_name)
+        initial_vmi_timestamp = k8s_virt_client.get_vmi_creation_timestamp(
+            vmi_namespace=vm_namespace, compute_instance_name=ci_name
+        )
+        _wait_for_vmi_resources(k8s_virt_client, vmi_namespace=vm_namespace, ci_name=ci_name, vcpus=2, memory_gib=8)
+
+        monkeypatch.setenv("OSAC_E2E_TARGET_INSTANCE_TYPE", target_instance_type)
+        cli.edit_compute_instance(uuid=ci_uuid)
+        assert _instance_type_name(grpc.get_compute_instance(ci_id=ci_uuid)) == target_instance_type
+        _complete_resize_and_restart_compute_instance(
+            grpc,
+            k8s_hub_client,
+            k8s_virt_client,
+            ci_uuid=ci_uuid,
+            ci_name=ci_name,
+            vmi_namespace=vm_namespace,
+            vm_template=vm_template,
+            target_instance_type=target_instance_type,
+            current_vcpus=2,
+            current_memory_gib=8,
+            target_vcpus=4,
+            target_memory_gib=4,
+            previous_config_version=initial_configuration.get("status", {}).get("desiredConfigVersion", ""),
+            initial_vmi_timestamp=initial_vmi_timestamp,
+        )
+    finally:
+        try:
+            if ci_uuid is not None:
+                cli.delete_compute_instance(uuid=ci_uuid)
+                if ci_name is not None:
+                    wait_for_deletion(k8s=k8s_hub_client, name=ci_name)
+                else:
+                    wait_for_grpc_removal(grpc=grpc, uuid=ci_uuid)
+        finally:
+            for instance_type in reversed(created_instance_types):
+                delete_instance_type_if_present(grpc=private_grpc, name=instance_type)
 
 
 @pytest.mark.usefixtures("compute_instance_type_editor")
