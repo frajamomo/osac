@@ -34,7 +34,7 @@ export const getComputeInstanceLastRestartedAt = async (
   }
   const instance = (Array.isArray(parsed) ? parsed[0] : parsed) as ComputeInstance | undefined;
   if (instance === undefined || instance === null || typeof instance !== 'object') {
-    throw new Error(`Compute instance '${name}' was not found in tenant '${tenantName}'.`);
+    throw new Error(`Compute instance '${name}' was not found.`);
   }
 
   return instance.status?.last_restarted_at;
