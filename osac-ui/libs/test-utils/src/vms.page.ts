@@ -133,13 +133,18 @@ export const expectVmDetailsToBeRunning = async (page: Page, timeout = 15_000): 
   });
 };
 
-/** Wait for the VM details page to report a status, refreshing the UI between polls. */
+/**
+ * Wait for the VM details page to report one of the given statuses, refreshing
+ * the UI between polls, and return the status it reported.
+ */
 export const waitForVmDetailsStatus = async (
   page: Page,
   name: string,
-  status: string,
+  status: string | readonly string[],
   timeout = 180_000,
-): Promise<void> => {
+): Promise<string> => {
+  const statuses = typeof status === 'string' ? [status] : status;
+  let reported = '';
   await expect
     .poll(
       async () => {
@@ -151,12 +156,25 @@ export const waitForVmDetailsStatus = async (
         } catch {
           return '';
         }
-        const currentStatus = getVmDetailsStatus(page).filter({ hasText: exactText(status) });
-        return (await currentStatus.count()) > 0 ? status : '';
+        for (const candidate of statuses) {
+          const currentStatus = getVmDetailsStatus(page).filter({
+            hasText: exactText(candidate),
+          });
+          if ((await currentStatus.count()) > 0) {
+            reported = candidate;
+            return candidate;
+          }
+        }
+        return '';
       },
-      { timeout, intervals: [1_000, 2_000, 5_000] },
+      {
+        message: `Wait for VM '${name}' to report ${statuses.join(' or ')}`,
+        timeout,
+        intervals: [1_000, 2_000, 5_000],
+      },
     )
-    .toBe(status);
+    .not.toBe('');
+  return reported;
 };
 
 /** Wait for the VM details page to report Running, refreshing the UI between polls. */
@@ -164,7 +182,9 @@ export const waitForVmToBeRunning = async (
   page: Page,
   name: string,
   timeout = 180_000,
-): Promise<void> => waitForVmDetailsStatus(page, name, 'Running', timeout);
+): Promise<void> => {
+  await waitForVmDetailsStatus(page, name, 'Running', timeout);
+};
 
 export type VmPowerAction = 'start' | 'stop' | 'restart';
 
