@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { selectListView } from './general/list_view';
 import {
   confirmRowDeletion,
   expectRowNotToExist,
@@ -129,8 +130,9 @@ const getTenantRow = (page: Page, tenantName: string): Locator => {
   );
 };
 
-const getTenantNames = async (page: Page): Promise<string[]> =>
-  (
+const getTenantNames = async (page: Page): Promise<string[]> => {
+  await selectListView(page);
+  return (
     await page
       .getByRole(...TenantsMainPage.tenantsTable)
       .locator(...TenantsMainPage.tenantRows)
@@ -139,6 +141,7 @@ const getTenantNames = async (page: Page): Promise<string[]> =>
   )
     .map((tenantName) => tenantName.trim())
     .filter(Boolean);
+};
 
 /** Open the tenant creation page and verify its title. */
 export const openCreateTenantPage = async (page: Page): Promise<void> => {
@@ -155,6 +158,7 @@ export const expectTenantToExist = async (
   tenantName: string,
   timeout = 15_000,
 ): Promise<Locator> => {
+  await selectListView(page);
   const tenantRow = getTenantRow(page, tenantName);
   await expect(tenantRow).toHaveCount(1, { timeout });
   return tenantRow;
@@ -162,6 +166,7 @@ export const expectTenantToExist = async (
 
 /** Verify that the requested tenant is not already present on the Tenants page. */
 export const expectTenantNotToExist = async (page: Page, tenantName: string): Promise<void> => {
+  await selectListView(page);
   await expectRowNotToExist(
     getTenantRow(page, tenantName),
     `Cannot create tenant "${tenantName}": a tenant with this name already exists.`,
@@ -253,6 +258,7 @@ export const expectTenantToBeSynced = async (
 
 /** Verify that the default shared and system tenants are synced. */
 export const expectDefaultTenants = async (page: Page): Promise<void> => {
+  await selectListView(page);
   for (const tenantName of defaultTenantNames) {
     const tenantRow = getTenantRow(page, tenantName);
     await expect(tenantRow).toHaveCount(1);

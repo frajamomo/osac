@@ -36,17 +36,8 @@ export const InstanceTypesCreatePage = {
   name: id(instanceTypeFieldIds.name),
   description: id(instanceTypeFieldIds.description),
   vcpus: id(instanceTypeFieldIds.vcpus),
-  vcpusPlus: [
-    `.pf-v6-c-number-input:has(#${instanceTypeFieldIds.vcpus}) button[aria-label="Plus"]`,
-  ],
   memoryGib: id(instanceTypeFieldIds.memoryGib),
-  memoryGibPlus: [
-    `.pf-v6-c-number-input:has(#${instanceTypeFieldIds.memoryGib}) button[aria-label="Plus"]`,
-  ],
   gpuCount: id(instanceTypeFieldIds.gpuCount),
-  gpuCountPlus: [
-    `.pf-v6-c-number-input:has(#${instanceTypeFieldIds.gpuCount}) button[aria-label="Plus"]`,
-  ],
   gpuResourceName: id(instanceTypeFieldIds.gpuResourceName),
   gpuPciDeviceSelector: id(instanceTypeFieldIds.gpuPciDeviceSelector),
   create: ['button', { name: 'Create', exact: true }],

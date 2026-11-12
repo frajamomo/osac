@@ -1,10 +1,7 @@
 import { type Locator, type Page, expect } from '@playwright/test';
 
-import {
-  confirmRowDeletion,
-  expectRowNotToExist,
-  getTableRowByCellText,
-} from './general/row_assertions';
+import { selectListView } from './general/list_view';
+import { confirmRowDeletion, expectRowNotToExist } from './general/row_assertions';
 import type { LifecycleAction } from './lifecycle';
 import {
   InstanceTypesActionsMenu,
@@ -51,18 +48,12 @@ const expectedMenuActions = (lifecycleState: InstanceTypeLifecycleState) => {
   return instanceTypeLifecycleActionsByState[lifecycleState];
 };
 
-const setNumberWithPlusButton = async (
-  plusButton: Locator,
-  value: number,
-  fieldName: string,
-): Promise<void> => {
+const setNumberField = async (field: Locator, value: number, fieldName: string): Promise<void> => {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`${fieldName} must be a positive integer.`);
   }
 
-  for (let click = 0; click < value; click += 1) {
-    await plusButton.click();
-  }
+  await field.fill(String(value));
 };
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -84,14 +75,17 @@ const expectDetailValue = async (
   );
 };
 
-const getInstanceTypeRow = (page: Page, name: string): Locator => {
-  return getTableRowByCellText(
-    page.getByRole(...InstanceTypesMainPage.instanceTypesTable),
-    InstanceTypesMainPage.instanceTypeRows,
-    InstanceTypesMainPage.instanceTypeNameCell,
-    exactText(name),
-  );
-};
+// The Name cell shows the description under the name, so match the row by
+// its name link instead of the whole cell text.
+const getInstanceTypeRow = (page: Page, name: string): Locator =>
+  page
+    .getByRole(...InstanceTypesMainPage.instanceTypesTable)
+    .locator(...InstanceTypesMainPage.instanceTypeRows)
+    .filter({
+      has: page
+        .locator(...InstanceTypesMainPage.instanceTypeNameCell)
+        .getByRole('link', { name, exact: true }),
+    });
 
 const getMenuItem = (page: Page, action: InstanceTypeMenuAction): Locator => {
   const [role, options] = lifecycleActionLocators[action];
@@ -141,6 +135,7 @@ export const openCreateInstanceTypePage = async (page: Page): Promise<void> => {
 
 /** Verify that the requested instance type is not already present in the list. */
 export const expectInstanceTypeNotToExist = async (page: Page, name: string): Promise<void> => {
+  await selectListView(page);
   await expectRowNotToExist(
     getInstanceTypeRow(page, name),
     `Cannot create instance type "${name}": an instance type with this name already exists.`,
@@ -149,6 +144,7 @@ export const expectInstanceTypeNotToExist = async (page: Page, name: string): Pr
 
 /** Verify that the requested instance type is present in the list. */
 export const expectInstanceTypeToExist = async (page: Page, name: string): Promise<void> => {
+  await selectListView(page);
   await expect(getInstanceTypeRow(page, name)).toHaveCount(1);
 };
 
@@ -165,10 +161,10 @@ export const createInstanceType = async (
   await page.locator(...InstanceTypesCreatePage.name).fill(name);
   await page.locator(...InstanceTypesCreatePage.description).fill(description);
 
-  // Set vCPUs and memory by clicking each field's Plus button.
-  await setNumberWithPlusButton(page.locator(...InstanceTypesCreatePage.vcpusPlus), vcpus, 'vCPUs');
-  await setNumberWithPlusButton(
-    page.locator(...InstanceTypesCreatePage.memoryGibPlus),
+  // Set vCPUs and memory.
+  await setNumberField(page.locator(...InstanceTypesCreatePage.vcpus), vcpus, 'vCPUs');
+  await setNumberField(
+    page.locator(...InstanceTypesCreatePage.memoryGib),
     memoryGib,
     'Memory (GiB)',
   );
@@ -177,11 +173,7 @@ export const createInstanceType = async (
 
   if (gpu) {
     // Fill all GPU fields when GPU data is supplied.
-    await setNumberWithPlusButton(
-      page.locator(...InstanceTypesCreatePage.gpuCountPlus),
-      gpu.count,
-      'GPU count',
-    );
+    await setNumberField(page.locator(...InstanceTypesCreatePage.gpuCount), gpu.count, 'GPU count');
     await page.locator(...InstanceTypesCreatePage.gpuResourceName).fill(gpu.resourceName);
     await page.locator(...InstanceTypesCreatePage.gpuPciDeviceSelector).fill(gpu.pciDeviceSelector);
     await expect(page.locator(...InstanceTypesCreatePage.gpuCount)).toHaveValue(String(gpu.count));
@@ -206,6 +198,7 @@ export const ensureInstanceTypeExists = async (
   memoryGib: number,
   gpu?: InstanceTypeGpu,
 ): Promise<void> => {
+  await selectListView(page);
   const instanceTypeRow = getInstanceTypeRow(page, name);
 
   try {
@@ -276,15 +269,18 @@ export const expectInstanceTypeListed = async (
   // Click the Instance types breadcrumb on the detail page, not the sidebar menu item.
   await page.getByRole(...InstanceTypesDetailPage.instanceTypesBreadcrumb).click();
   await expect(page.getByRole(...InstanceTypesMainPage.pageTitle)).toBeVisible();
+  await selectListView(page);
 
   // Locate the created row by its exact name.
   const instanceTypeRow = getInstanceTypeRow(page, name);
   await expect(instanceTypeRow).toHaveCount(1);
 
   // Verify the created row's lifecycle state and resource values.
-  await expect(instanceTypeRow.locator(...InstanceTypesMainPage.instanceTypeNameCell)).toHaveText(
-    exactText(name),
-  );
+  await expect(
+    instanceTypeRow
+      .locator(...InstanceTypesMainPage.instanceTypeNameCell)
+      .getByRole('link', { name, exact: true }),
+  ).toBeVisible();
   await expect(
     instanceTypeRow.locator(...InstanceTypesMainPage.instanceTypeLifecycleCell),
   ).toHaveText(exactText('Active'));
@@ -305,6 +301,7 @@ export const changeInstanceTypeLifecycle = async (
   name: string,
   action: InstanceTypeLifecycleAction,
 ): Promise<void> => {
+  await selectListView(page);
   // Locate the requested instance type and read its current lifecycle state.
   const instanceTypeRow = getInstanceTypeRow(page, name);
   await expect(instanceTypeRow).toHaveCount(1);
@@ -329,6 +326,7 @@ export const changeInstanceTypeLifecycle = async (
 
 /** Make an instance type Obsolete when needed, delete it, and wait for its row to disappear. */
 export const deleteInstanceType = async (page: Page, name: string): Promise<void> => {
+  await selectListView(page);
   // Locate the requested instance type and read its current lifecycle state.
   const instanceTypeRow = getInstanceTypeRow(page, name);
   await expect(instanceTypeRow).toHaveCount(1);
