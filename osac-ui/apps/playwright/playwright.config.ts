@@ -189,6 +189,11 @@ export default defineConfig({
       testMatch: preResourceBaseCreateTestMatch,
       fullyParallel: false,
       use: { ...devices['Desktop Chrome'], trace: 'off', video: 'off' },
+      // This project creates the tenant, so it owns the tenant teardown. A
+      // teardown must not have its own teardown: Playwright then makes the two
+      // wait for each other and runs neither. tenant-delete still runs last,
+      // after vmaas-full-flow-pre-resource-delete has removed the resources.
+      teardown: flowMode === 'full' ? 'tenant-delete' : undefined,
     },
     {
       name: 'vmaas-full-flow-pre-resource',
@@ -255,7 +260,6 @@ export default defineConfig({
       testMatch: preResourceDeleteTestMatch,
       fullyParallel: false,
       use: { ...devices['Desktop Chrome'], trace: 'off', video: 'off' },
-      teardown: 'tenant-delete',
     },
     {
       name: 'storage-tier',
